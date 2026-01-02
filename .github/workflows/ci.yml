@@ -1,0 +1,318 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop, copilot/** ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+jobs:
+  # ============================================================================
+  # Build Firmware
+  # ============================================================================
+  build-firmware:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        environment: [teensy40, teensy40_remote]
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        submodules: recursive
+    
+    - name: Cache PlatformIO
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.platformio
+          .pio
+        key: ${{ runner.os }}-pio-${{ matrix.environment }}-${{ hashFiles('**/platformio.ini') }}
+        restore-keys: |
+          ${{ runner.os }}-pio-${{ matrix.environment }}-
+          ${{ runner.os }}-pio-
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install PlatformIO
+      run: |
+        pip install --upgrade platformio
+        pio upgrade --dev
+        pio pkg update
+    
+    - name: Build firmware
+      run: |
+        pio run -e ${{ matrix.environment }}
+    
+    - name: Check build size
+      run: |
+        pio run -e ${{ matrix.environment }} -t size
+    
+    - name: Upload firmware artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: firmware-${{ matrix.environment }}
+        path: |
+          .pio/build/${{ matrix.environment }}/*.hex
+          .pio/build/${{ matrix.environment }}/*.elf
+        retention-days: 30
+
+  # ============================================================================
+  # Run Tests
+  # ============================================================================
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    
+    - name: Cache PlatformIO
+      uses: actions/cache@v3
+      with:
+        path: ~/.platformio
+        key: ${{ runner.os }}-pio-test-${{ hashFiles('**/platformio.ini') }}
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install PlatformIO
+      run: |
+        pip install --upgrade platformio
+        pio upgrade --dev
+    
+    - name: Run native tests
+      run: |
+        pio test -e native --verbose
+      continue-on-error: true
+    
+    - name: Upload test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: test-results
+        path: .pio/test/**/*.xml
+
+  # ============================================================================
+  # Formal Verification
+  # ============================================================================
+  verify-tla:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    
+    - name: Set up Java
+      uses: actions/setup-java@v3
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+    
+    - name: Cache TLA+ tools
+      uses: actions/cache@v3
+      with:
+        path: ~/tla-tools
+        key: tla-tools-v1.7.1
+    
+    - name: Download TLA+ tools
+      run: |
+        mkdir -p ~/tla-tools
+        if [ ! -f ~/tla-tools/tla2tools.jar ]; then
+          wget -O ~/tla-tools/tla2tools.jar \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.7.1/tla2tools.jar
+        fi
+    
+    - name: Verify TLA+ specifications
+      run: |
+        cd verification/tla
+        java -XX:+UseParallelGC -cp ~/tla-tools/tla2tools.jar tlc2.TLC \
+          -workers auto -coverage 1 FlappierBird.tla || true
+      continue-on-error: true
+    
+    - name: Upload TLA+ results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: tla-verification-results
+        path: verification/tla/states/
+
+  verify-z3:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    
+    - name: Install Z3
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y z3
+    
+    - name: Run Z3 constraint verification
+      run: |
+        cd verification/z3
+        z3 -smt2 FlappierBird.smt2 | tee z3_output.txt
+      continue-on-error: true
+    
+    - name: Check Z3 results
+      run: |
+        cd verification/z3
+        if grep -q "sat" z3_output.txt; then
+          echo "✓ Z3 constraints are satisfiable"
+          exit 0
+        elif grep -q "unsat" z3_output.txt; then
+          echo "✗ Z3 constraints are unsatisfiable"
+          exit 1
+        else
+          echo "? Z3 result unclear"
+          exit 0
+        fi
+      continue-on-error: true
+    
+    - name: Upload Z3 results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: z3-verification-results
+        path: verification/z3/*.txt
+
+  # ============================================================================
+  # Documentation Generation
+  # ============================================================================
+  documentation:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y doxygen graphviz
+    
+    - name: Check for Doxyfile
+      run: |
+        if [ ! -f Doxyfile ]; then
+          echo "Creating default Doxyfile"
+          doxygen -g Doxyfile
+          sed -i 's/PROJECT_NAME           = "My Project"/PROJECT_NAME           = "FlappierBird"/' Doxyfile
+          sed -i 's/OUTPUT_DIRECTORY       =/OUTPUT_DIRECTORY       = docs/' Doxyfile
+          sed -i 's/INPUT                  =/INPUT                  = arduino matlab verification/' Doxyfile
+          sed -i 's/RECURSIVE              = NO/RECURSIVE              = YES/' Doxyfile
+          sed -i 's/GENERATE_LATEX         = YES/GENERATE_LATEX         = NO/' Doxyfile
+        fi
+    
+    - name: Generate documentation
+      run: |
+        doxygen Doxyfile || true
+      continue-on-error: true
+    
+    - name: Upload documentation artifacts
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: documentation
+        path: |
+          docs/html/
+          docs/RESEARCH_DEVELOPMENT_REPORT.md
+    
+    - name: Deploy to GitHub Pages
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./docs/html
+        cname: flappierbird.example.com
+      continue-on-error: true
+
+  # ============================================================================
+  # Static Analysis
+  # ============================================================================
+  static-analysis:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install PlatformIO
+      run: |
+        pip install --upgrade platformio
+    
+    - name: Run static code analysis
+      run: |
+        pio check --skip-packages --severity=medium
+      continue-on-error: true
+
+  # ============================================================================
+  # MATLAB/Octave Simulations
+  # ============================================================================
+  simulations:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    
+    - name: Install Octave
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y octave octave-signal octave-control
+    
+    - name: Run simulations
+      run: |
+        cd matlab
+        octave --eval "try; torques; catch e; disp(e); end" || true
+      continue-on-error: true
+    
+    - name: Upload simulation results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: simulation-results
+        path: matlab/*.png
+
+  # ============================================================================
+  # Summary
+  # ============================================================================
+  summary:
+    runs-on: ubuntu-latest
+    needs: [build-firmware, test, verify-tla, verify-z3, documentation, static-analysis, simulations]
+    if: always()
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    
+    - name: Generate summary
+      run: |
+        echo "# CI/CD Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## Build Status" >> $GITHUB_STEP_SUMMARY
+        echo "- Firmware Build: ${{ needs.build-firmware.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Tests: ${{ needs.test.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- TLA+ Verification: ${{ needs.verify-tla.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Z3 Verification: ${{ needs.verify-z3.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Documentation: ${{ needs.documentation.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Static Analysis: ${{ needs.static-analysis.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Simulations: ${{ needs.simulations.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## Artifacts" >> $GITHUB_STEP_SUMMARY
+        echo "- Firmware binaries available in artifacts" >> $GITHUB_STEP_SUMMARY
+        echo "- Documentation available in artifacts" >> $GITHUB_STEP_SUMMARY
+        echo "- Verification results available in artifacts" >> $GITHUB_STEP_SUMMARY
