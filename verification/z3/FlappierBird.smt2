@@ -95,6 +95,8 @@
 
 ; Trim control law: servo2 adjusts for pitch and altitude
 ; servo2_angle ≈ 90 + pitch + gravity_compensation
+; Note: Uses accel_x because IMU X-axis is forward-facing in bird's body frame
+; Changes in pitch affect X-component of gravity vector
 (define-const cruiseOffset Real 40.0)
 (define-const gravity_scale Real (/ (+ accel_x 9.81) 19.62))
 (define-const trim_from_gravity Real (* 180.0 gravity_scale))
