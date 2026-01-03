@@ -1,0 +1,95 @@
+# Build directories
+.pio/
+.pioenvs/
+.piolibdeps/
+build/
+dist/
+*.egg-info/
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.cmake
+
+# Compiled files
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.hex
+*.bin
+*.elf
+*.map
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg
+*.egg-info/
+.pytest_cache/
+
+# MATLAB
+*.asv
+*.m~
+
+# Documentation build
+docs/html/
+docs/latex/
+docs/xml/
+Doxyfile.bak
+
+# Test results
+*.xml
+*.log
+test-results/
+
+# TLA+ states
+verification/tla/states/
+*.dot
+*.ps
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.backup
+
+# OS files
+Thumbs.db
+Desktop.ini
+
+# Package manager
+node_modules/
+package-lock.json
+
+# Coverage reports
+coverage/
+.coverage
+*.coverage
+
+# Logs
+*.log
+logs/
+
+# Environment files
+.env
+.env.local
